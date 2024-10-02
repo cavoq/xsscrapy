@@ -4,13 +4,13 @@
 # See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
 from scrapy.exceptions import DropItem
 from html.parser import HTMLParser
-from xsscrapy.items import vuln#, inj_resp
+from xsscrapy.items import vuln  # , inj_resp
 import re
 import lxml.etree
 import lxml.html
 from lxml.html import soupparser, fromstring
 import itertools
-#from IPython import embed
+# from IPython import embed
 from socket import gaierror, gethostbyname
 from urllib.parse import urlparse
 from logging import CRITICAL, ERROR, WARNING, INFO, DEBUG
@@ -26,7 +26,7 @@ class XSSCharFinder(object):
             filename = up + '.txt'
             
         return filename
-        
+
     def open_spider(self, spider):
         self.filename = self.get_filename(spider.url)
 
@@ -38,7 +38,7 @@ class XSSCharFinder(object):
         delim = meta['delim']
         param = meta['xss_param']
         resp_url = response.url
-        body = response.body
+        body = response.body.decode('utf-8')
         mismatch = False
         error = None
         fuzz_payload = payload.replace(delim, '').replace(';9', '') # xss char payload
@@ -215,7 +215,7 @@ class XSSCharFinder(object):
         #        return e
 
     def unclaimedURL_check(self, body):
-        tree = fromstring(body)
+        tree = fromstring(bytes(body, 'utf-8'))
         scriptURLs = tree.xpath('//script/@src')
         for url in scriptURLs:
             parser = urlparse(url)
@@ -929,7 +929,7 @@ class XSSCharFinder(object):
     def unescape_payload(self, payload):
         ''' Unescape the various payload encodings (html and url encodings)'''
         if '%' in payload:
-            payload = urllib.unquote_plus(payload)
+            payload = unquote_plus(payload)
             #if '%' in payload: # in case we ever add double url encoding like %2522 for dub quote
             #    payload = urllib.unquote_plus(payload)
         # only html-encoded payloads will have & in them

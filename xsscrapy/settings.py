@@ -6,7 +6,7 @@
 #REDIRECT_ENABLED = False
 
 # Uncomment this to lessen the spider's output
-#LOG_LEVEL = 'INFO'
+LOG_LEVEL = 'INFO'
 
 BOT_NAME = 'xsscrapy'
 

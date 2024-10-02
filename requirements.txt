@@ -1,8 +1,8 @@
 scrapy
-pybloomfilter
+pybloomfiltermmap3
 requests
 bs4
-twisted==16.6.0
+twisted
 w3lib
 lxml
 six

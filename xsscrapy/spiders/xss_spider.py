@@ -3,18 +3,17 @@
 from scrapy.linkextractors import LinkExtractor
 from scrapy.spiders import CrawlSpider, Rule
 from scrapy.http import FormRequest, Request
-from scrapy.selector import Selector
 from xsscrapy.items import inj_resp
 from xsscrapy.loginform import fill_login_form
-from urlparse import urlparse, parse_qsl, urljoin, urlunparse, urlunsplit
+from urllib.parse import (
+    urlparse, parse_qsl, urljoin, urlunparse, urlencode, unquote
+)
 
 from scrapy.http.cookies import CookieJar
-from cookielib import Cookie
 
 from lxml.html import soupparser, fromstring
 import lxml.etree
 import lxml.html
-import urllib
 import re
 import sys
 import cgi
@@ -29,7 +28,7 @@ __author__ = 'Dan McInerney danhmcinerney@gmail.com'
 class XSSspider(CrawlSpider):
     name = 'xsscrapy'
     # Scrape 404 pages too
-    handle_httpstatus_list = [x for x in xrange(0,300)]+[x for x in xrange(400,600)]
+    handle_httpstatus_list = [x for x in range(0,300)]+[x for x in range(400,600)]
 
 
     rules = (Rule(LinkExtractor(), callback='parse_resp', follow=True), )
@@ -65,7 +64,7 @@ class XSSspider(CrawlSpider):
 
         # If password is not set and login user is then get password, otherwise set it
         if kwargs.get('pw') == 'None' and self.login_user is not None:
-            self.login_pass = raw_input("Please enter the password: ")
+            self.login_pass = input("Please enter the password: ")
         else:
             self.login_pass = kwargs.get('pw')
 
@@ -117,8 +116,9 @@ class XSSspider(CrawlSpider):
     def login(self, response):
         ''' Fill out the login form and return the request'''
         self.log('Logging in...')
+        body = response.body.decode('utf-8')
         try:
-            args, url, method = fill_login_form(response.url, response.body, self.login_user, self.login_pass)
+            args, url, method = fill_login_form(response.url, body, self.login_user, self.login_pass)
             return FormRequest(url,
                               method=method,
                               formdata=args,
@@ -131,7 +131,7 @@ class XSSspider(CrawlSpider):
 
     def confirm_login(self, response):
         ''' Check that the username showed up in the response page '''
-        if self.login_user.lower() in response.body.lower():
+        if self.login_user.lower() in response.body.decode('utf-8').lower():
             self.log('Successfully logged in (or, at least, the username showed up in the response html)')
             return Request(url=self.start_urls[0], dont_filter=True)
         else:
@@ -142,7 +142,8 @@ class XSSspider(CrawlSpider):
     def robot_parser(self, response):
         ''' Parse the robots.txt file and create Requests for the disallowed domains '''
         disallowed_urls = set([])
-        for line in response.body.splitlines():
+        body = response.body.decode('utf-8')
+        for line in body.splitlines():
             if 'disallow: ' in line.lower():
                 try:
                     address = line.split()[1]
@@ -161,7 +162,7 @@ class XSSspider(CrawlSpider):
         Checks for XSS in headers and url'''
         reqs = []
         orig_url = response.url
-        body = response.body
+        body = response.body.decode('utf-8')
         parsed_url = urlparse(orig_url)
         # parse_qsl rather than parse_qs in order to preserve order
         # will always return a list
@@ -170,7 +171,8 @@ class XSSspider(CrawlSpider):
         try:
             # soupparser will handle broken HTML better (like identical attributes) but god damn will you pay for it
             # in CPU cycles. Slows the script to a crawl and introduces more bugs.
-            doc = lxml.html.fromstring(body, base_url=orig_url)
+            doc = lxml.html.fromstring(
+                bytes(body, 'utf-8'), base_url=orig_url)
         except lxml.etree.ParserError:
             self.log('ParserError from lxml on %s' % orig_url)
             return []
@@ -238,8 +240,8 @@ class XSSspider(CrawlSpider):
     def make_iframe_reqs(self, doc, orig_url):
         ''' Grab the <iframe src=...> attribute and add those URLs to the
         queue should they be within the start_url domain '''
-
         parsed_url = urlparse(orig_url)
+
         iframe_reqs = []
         iframes = doc.xpath('//iframe/@src')
         frames = doc.xpath('//frame/@src')
@@ -248,8 +250,8 @@ class XSSspider(CrawlSpider):
 
         url = None
         for i in all_frames:
-            if type(i) == unicode:
-                i = str(i).strip()
+            if isinstance(i, str):
+                i = i.strip()
             # Nonrelative path
             if '://' in i:
                 # Skip iframes to outside sources
@@ -272,7 +274,7 @@ class XSSspider(CrawlSpider):
         ''' Payload each form input in each input's own request '''
         reqs = []
         vals_urls_meths = []
-        
+
         payload = self.make_payload()
 
         for form in forms:
@@ -364,7 +366,7 @@ class XSSspider(CrawlSpider):
                 payload = query[2]
                                            # scheme       #netlo         #path          #params        #query (url params) #fragment
                 payloaded_url = urlunparse((parsed_url[0], parsed_url[1], parsed_url[2], parsed_url[3], query_str, parsed_url[5]))
-                payloaded_url = urllib.unquote(payloaded_url)
+                payloaded_url = unquote(payloaded_url)
                 payloaded_urls.append((payloaded_url, params, payload))
 
             # Payload the URL path
@@ -393,7 +395,7 @@ class XSSspider(CrawlSpider):
             path = path + '/' + payload + '/'
                                     #scheme, netloc, path, params, query (url params), fragment
         payloaded_url = urlunparse((parsed_url[0], parsed_url[1], path, parsed_url[3], parsed_url[4], parsed_url[5]))
-        payloaded_url = urllib.unquote(payloaded_url)
+        payloaded_url = unquote(payloaded_url)
         payloaded_data = (payloaded_url, 'URL path', payload)
 
         return payloaded_data
@@ -407,7 +409,7 @@ class XSSspider(CrawlSpider):
         changed_params = []
         modified = False
         # Create a list of lists where num of lists = len(params)
-        for x in xrange(0, len(url_params)):
+        for x in range(0, len(url_params)):
             single_url_params = []
 
             # Make the payload
@@ -429,7 +431,7 @@ class XSSspider(CrawlSpider):
                     single_url_params.append(p)
 
             # Add the modified, urlencoded params to the master list
-            new_payloaded_params.append((urllib.urlencode(single_url_params), modified, payload))
+            new_payloaded_params.append((urlencode(single_url_params), modified, payload))
             # Reset the changed parameter tracker
             modified = False
 
@@ -441,7 +443,8 @@ class XSSspider(CrawlSpider):
         """
         Make the payload with a unique delim
         """
-        two_rand_letters = random.choice(string.lowercase) + random.choice(string.lowercase)
+        two_rand_letters = random.choice(
+            string.ascii_lowercase) + random.choice(string.ascii_lowercase)
         delim_str = self.delim + two_rand_letters
         payload = delim_str + self.test_str + delim_str + ';9'
         return payload
@@ -467,8 +470,8 @@ class XSSspider(CrawlSpider):
         if netloc and protocol and path:
             for payload in modded_params:
                 for params in modded_params[payload]:
-                    joinedParams = urllib.urlencode(params, doseq=1) # doseq maps the params back together
-                    newURL = urllib.unquote(protocol+netloc+path+'?'+joinedParams)
+                    joinedParams = urlencode(params, doseq=1) # doseq maps the params back together
+                    newURL = unquote(protocol+netloc+path+'?'+joinedParams)
 
                     # Prevent nonpayloaded URLs
                     if self.test_str not in newURL:
@@ -509,7 +512,7 @@ class XSSspider(CrawlSpider):
         # This preserves the order of the URL parameters and will also
         # test each parameter individually instead of all at once
         allModdedParams[payload] = []
-        for x in xrange(0, len(params)):
+        for x in range(0, len(params)):
             for p in params:
                 param = p[0]
                 value = p[1]
