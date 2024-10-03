@@ -3,8 +3,8 @@
 # Don't forget to add your pipeline to the ITEM_PIPELINES setting
 # See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
 from scrapy.exceptions import DropItem
-from html.parser import HTMLParser
 from xsscrapy.items import vuln#, inj_resp
+import HTMLParser
 import re
 import lxml.etree
 import lxml.html
@@ -12,7 +12,7 @@ from lxml.html import soupparser, fromstring
 import itertools
 #from IPython import embed
 from socket import gaierror, gethostbyname
-from urllib.parse import urlparse
+from urlparse import urlparse
 from logging import CRITICAL, ERROR, WARNING, INFO, DEBUG
 
 class XSSCharFinder(object):
@@ -26,7 +26,7 @@ class XSSCharFinder(object):
             filename = up + '.txt'
             
         return filename
-        
+
     def open_spider(self, spider):
         self.filename = self.get_filename(spider.url)
 

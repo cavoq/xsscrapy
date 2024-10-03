@@ -1,4 +1,4 @@
-from pybloomfilter import BloomFilter
+from xsscrapy.bloomfilter import BloomFilter
 from scrapy.utils.job import job_dir
 from scrapy.dupefilters import BaseDupeFilter
 from xsscrapy.settings import bloomfilterSize
@@ -8,7 +8,7 @@ class BloomURLDupeFilter(BaseDupeFilter):
 
     def __init__(self, path=None):
         self.file = None
-        self.fingerprints = BloomFilter(bloomfilterSize*10, 0.0001)
+        self.fingerprints = BloomFilter(bloomfilterSize)
 
     @classmethod
     def from_settings(cls, settings):
@@ -18,7 +18,7 @@ class BloomURLDupeFilter(BaseDupeFilter):
         fp = request.url
         if fp in self.fingerprints:
             return True
-        self.fingerprints.add(fp)
+        self.fingerprints.insert(fp)
 
     def close(self, reason):
         self.fingerprints = None
