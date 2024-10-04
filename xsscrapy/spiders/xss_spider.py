@@ -1,6 +1,11 @@
 # -- coding: utf-8 --
 
+import locale
+import random
+import string
+
 from scrapy.http import Response
+from scrapy.http.cookies import CookieJar
 from scrapy.http.request.form import FormElement, InputElement, TextareaElement
 from scrapy.linkextractors import LinkExtractor
 from scrapy.spiders import CrawlSpider, Rule
@@ -10,28 +15,21 @@ from xsscrapy.loginform import fill_login_form
 from urllib.parse import (
     ParseResult, urlparse, parse_qsl, urljoin, urlunparse, urlencode, unquote
 )
-
-from scrapy.http.cookies import CookieJar
-
 from lxml import html, etree
-import string
-import random
 
-# from IPython import embed
 
 __author__ = 'Dan McInerney danhmcinerney@gmail.com'
 
 
 class XSSspider(CrawlSpider):
     name = 'xsscrapy'
-    handle_httpstatus_list = [x for x in range(
-        0, 300)]+[x for x in range(400, 600)]
+    handle_httpstatus_list = [x for x in range(600) if not (300 <= x < 400)]
     rules = (Rule(LinkExtractor(), callback='parse_resp', follow=True), )
 
     def __init__(self, *args, **kwargs):
         # run using: scrapy crawl xss_spider -a url='http://example.com'
         super(XSSspider, self).__init__(*args, **kwargs)
-        self.start_urls = [kwargs.get('url', '')]
+        self.start_urls = [kwargs.get('url')]
         hostname = urlparse(
             self.start_urls[0]).hostname if self.start_urls else None
         # With subdomains
@@ -47,7 +45,6 @@ class XSSspider(CrawlSpider):
         self.login_pass = kwargs.get('pw')
         self.login_cookie_key = kwargs.get('cookie_key')
         self.login_cookie_value = kwargs.get('cookie_value')
-        self.basic_auth = kwargs.get('basic')
 
         if self.login_user or (self.login_cookie_key and self.login_cookie_value):
             # Don't hit links with 'logout' in them since self.login_user or cookies exists
@@ -57,6 +54,7 @@ class XSSspider(CrawlSpider):
         if not self.login_pass and self.login_user:
             self.login_pass = input("Please enter the password: ")
 
+        self.basic_auth = kwargs.get('basic')
         if self.basic_auth:
             self.http_user = self.login_user
             self.http_pass = self.login_pass
@@ -153,26 +151,21 @@ class XSSspider(CrawlSpider):
             return []
 
         reqs: list[Request] = []
-
-        # Grab iframe source URLs if they are part of the start_url page
         reqs.extend(self.make_iframe_reqs(doc, orig_url))
 
-        # Prepare header requests
         test_headers = ['Referer']
         if 'UA' in response.meta and response.meta['UA'] in response.text:
             test_headers.append('User-Agent')
         reqs.extend(self.make_header_reqs(
             orig_url, self.test_str, test_headers))
 
-        # Prepare cookie requests
         reqs.extend(self.make_cookie_reqs(orig_url, self.test_str, 'cookie'))
 
-        # Fill out forms with xss strings
         forms: list[FormElement] = doc.xpath('//form')
         if forms:
             reqs.extend(self.make_form_reqs(orig_url, forms, self.test_str))
 
-        payloaded_urls = self.make_URLs(orig_url, parsed_url, url_params)
+        payloaded_urls = self.make_urls(orig_url, parsed_url, url_params)
         reqs.extend(self.make_url_reqs(orig_url, payloaded_urls))
 
         # Add the original untampered response to each request for use by sqli_check()
@@ -187,10 +180,10 @@ class XSSspider(CrawlSpider):
         we attempt to construct a valid URL using the original page's URL (orig_url).
         """
         if not url:
-            self.log(
-                "Form action URL is missing. Defaulting to the original page URL.")
+            self.log("Form action URL is missing")
             return
 
+        # Sometimes lxml doesn't read the form.action right
         if '://' not in url:
             self.log(
                 "Form URL contains no scheme, attempting to construct a valid form submission URL."
@@ -216,6 +209,7 @@ class XSSspider(CrawlSpider):
             if '://' in src:
                 # Absolute URL
                 if self.base_url in src:
+                    url = src
                     iframe_reqs.append(Request(src))
             else:
                 # Relative URL
@@ -237,7 +231,7 @@ class XSSspider(CrawlSpider):
             form_url = form.action or form.base_url
             url = self.url_valid(form_url, orig_url)
 
-            if not url:
+            if not url or not method:
                 continue
 
             if url in method:
@@ -259,7 +253,7 @@ class XSSspider(CrawlSpider):
                 if input_element.type in ['checkbox', 'radio', 'submit']:
                     continue
 
-            orig_val = form.fields.get(input_element.name, '') or ''
+            orig_val = form.fields.get(input_element.name, '')
 
             try:
                 form.fields[input_element.name] = payload
@@ -281,7 +275,7 @@ class XSSspider(CrawlSpider):
             )
             reqs.append(req)
 
-        # Reset the input value to its original state
+            # Reset the input value to its original state
             try:
                 form.fields[input_element.name] = orig_val
             except ValueError as e:
@@ -307,7 +301,6 @@ class XSSspider(CrawlSpider):
     def make_cookie_reqs(self, url: str, payload: str, xss_param: str):
         """Generate payloaded cookie header requests"""
         payload = self.make_payload()
-
         reqs = [Request(url,
                         meta={'xss_place': 'header',
                               'cookiejar': CookieJar(),
@@ -320,11 +313,9 @@ class XSSspider(CrawlSpider):
                         cookies={'userinput': payload},
                         callback=self.xss_chars_finder,
                         dont_filter=True)]
+        return reqs
 
-        if len(reqs) > 0:
-            return reqs
-
-    def make_URLs(self, orig_url: str, parsed_url: ParseResult, url_params):
+    def make_urls(self, orig_url: str, parsed_url: ParseResult, url_params):
         """Create the URL parameter payloaded URLs"""
         payloaded_urls = []
 
@@ -348,8 +339,7 @@ class XSSspider(CrawlSpider):
             payloaded_end_of_url = self.payload_end_of_url(orig_url)
             payloaded_urls.append(payloaded_end_of_url)
 
-        if len(payloaded_urls) > 0:
-            return payloaded_urls
+        return payloaded_urls
 
     def payload_url_path(self, parsed_url):
         """
@@ -388,7 +378,7 @@ class XSSspider(CrawlSpider):
             payload = self.make_payload()
 
             for p in url_params:
-                param, value = p
+                param, _ = p
 
                 # if param has not been modified and we haven't changed a parameter for this loop
                 if param not in changed_params and modified == False:
@@ -408,15 +398,12 @@ class XSSspider(CrawlSpider):
             # Reset the changed parameter tracker
             modified = False
 
-        if len(new_payloaded_params) > 0:
-            # [(payloaded params, payloaded param, payload), (payloaded params, payloaded param, payload)]
-            return new_payloaded_params
+        return new_payloaded_params
 
     def make_payload(self):
         """Make the payload with a unique delim"""
-        two_rand_letters = random.choice(
-            string.ascii_lowercase) + random.choice(string.ascii_lowercase)
-        delim_str = self.delim + two_rand_letters
+        two_rand_letters = ''.join(random.choices(string.ascii_lowercase, k=2))
+        delim_str = f"{self.delim}{two_rand_letters}"
         payload = delim_str + self.test_str + delim_str + ';9'
         return payload
 
@@ -431,7 +418,7 @@ class XSSspider(CrawlSpider):
 
         return (payloaded_url, 'end of url', payload)
 
-    def payload_url_vars(self, url: str, payload):
+    def payload_url_vars(self, url: str, payload: str):
         """Payload the URL variables"""
         payloaded_urls = []
         params = self.getURLparams(url)
@@ -457,14 +444,13 @@ class XSSspider(CrawlSpider):
         # Payload the path, like: example.com/page1.php?param=val becomes example.com/page1.php/FUZZCHARS/?param=val
         payloaded_urls.append(self.payload_path(url))
 
-        if len(payloaded_urls) > 0:
-            return payloaded_urls
+        return payloaded_urls
 
 #    def payload_path(self, url):
 #        ''' Payload the path, like: example.com/page1.php?param=val becomes example.com/page1.php/FUZZCHARS/?param=val '''
 #        parsed = urlparse(url)
 
-    def getURLparams(self, url):
+    def getURLparams(self, url: str):
         """Parse out the URL parameters"""
         parsedUrl: ParseResult = urlparse(url)
         fullParams = parsedUrl.query
@@ -474,40 +460,39 @@ class XSSspider(CrawlSpider):
 
     def change_params(self, params, payload):
         """Returns a list of complete parameters, each with 1 parameter changed to an XSS vector"""
-        changedParams = []
-        changedParam = False
-        moddedParams = []
-        allModdedParams = {}
+        changed_params = []
+        changed_param = False
+        modded_params = []
+        all_modded_params = {}
 
         # Create a list of lists, each list will be the URL we will test
         # This preserves the order of the URL parameters and will also
         # test each parameter individually instead of all at once
-        allModdedParams[payload] = []
+        all_modded_params[payload] = []
         for x in range(0, len(params)):
             for p in params:
                 param = p[0]
                 value = p[1]
                 # If a parameter has not been modified yet
-                if param not in changedParams and changedParam == False:
-                    changedParams.append(param)
+                if param not in changed_params and changed_param == False:
+                    changed_params.append(param)
                     p = (param, value+payload)
-                    moddedParams.append(p)
-                    changedParam = param
+                    modded_params.append(p)
+                    changed_param = param
                 else:
-                    moddedParams.append(p)
+                    modded_params.append(p)
 
             # Reset so we can step through again and change a diff param
             # allModdedParams[payload].append(moddedParams)
-            allModdedParams[payload].append(moddedParams)
+            all_modded_params[payload].append(modded_params)
 
-            changedParam = False
-            moddedParams = []
+            changed_param = False
+            modded_params = []
 
         # Reset the list of changed params each time a new payload is attempted
         # changedParams = []
 
-        if len(allModdedParams) > 0:
-            return allModdedParams
+        return all_modded_params
 
     def url_processor(self, url: str):
         """Get the url domain, protocol, and netloc using urlparse"""
@@ -538,8 +523,7 @@ class XSSspider(CrawlSpider):
                         callback=self.xss_chars_finder)
                 for url in payloaded_urls]  # Meta is the payload
 
-        if len(reqs) > 0:
-            return reqs
+        return reqs
 
     def make_header_reqs(self, url, payload, inj_headers):
         """Generate header requests with the payload"""
@@ -559,8 +543,7 @@ class XSSspider(CrawlSpider):
                         callback=self.xss_chars_finder)
                 for inj_header in inj_headers]
 
-        if len(reqs) > 0:
-            return reqs
+        return reqs
 
     def get_user_agent(self, header, payload):
         """Return the User-Agent header with the payload"""

@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 import sys
 from argparse import ArgumentParser
 from collections import defaultdict

@@ -1,9 +1,9 @@
 from scrapy.exceptions import IgnoreRequest
-from urllib.parse import unquote
+from scrapy.http import Request
 from pybloomfilter import BloomFilter
 import random
-import re
 from xsscrapy.settings import bloomfilterSize
+from xsscrapy.spiders.xss_spider import XSSspider
 
 # Filter out duplicate requests with Bloom filters since they're much easier on memory
 # URLS_FORMS_HEADERS = BloomFilter(3000000, 0.00001)
@@ -36,7 +36,7 @@ class RandomUserAgentMiddleware(object):
 class InjectedDupeFilter(object):
     ''' Filter duplicate payloaded URLs, headers, and forms since all of those have dont_filter = True '''
 
-    def process_request(self, request, spider):
+    def process_request(self, request: Request, spider: XSSspider):
 
         meta = request.meta
         if 'xss_place' not in meta:

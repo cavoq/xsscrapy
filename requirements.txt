@@ -1,7 +1,6 @@
 scrapy
 pybloomfiltermmap3
 requests
-bs4
 twisted
 w3lib
 lxml

@@ -1,14 +1,10 @@
-# Define your item pipelines here
-#
-# Don't forget to add your pipeline to the ITEM_PIPELINES setting
-# See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
+from html import unescape
 from scrapy.http import Response
 from xsscrapy.spiders.xss_spider import XSSspider
 from scrapy.exceptions import DropItem
 from xsscrapy.items import vuln
 import re
 from lxml import html
-# from IPython import embed
 from socket import gaierror, gethostbyname
 from urllib.parse import unquote_plus, urlparse
 from logging import INFO
@@ -28,13 +24,12 @@ class XSSCharFinder(object):
     def open_spider(self, spider: XSSspider):
         self.filename = self.get_filename(spider.url)
 
-    def process_item(self, item, spider: XSSspider):
+    def process_item(self, item: vuln, spider: XSSspider):
         response: Response = item['resp']
         meta = response.meta
 
         payload: str = meta['payload']
         delim = meta['delim']
-        param = meta['xss_param']
         resp_url = response.url
         body: str = response.text
         mismatch = False
@@ -57,7 +52,7 @@ class XSSCharFinder(object):
             return None
 
         # Check for script tags pointing to a non-registered domain
-        unclaimed_url = self.unclaimedURL_check(response.body)
+        unclaimed_url = self.unclaimed_url_check(response.body)
         if unclaimed_url:
             msg = f'Found non-registered domain in script tag! Non-registered URL: {unclaimed_url}'
             self.log_to_file(msg, resp_url, spider)
@@ -99,6 +94,7 @@ class XSSCharFinder(object):
                 except TypeError:
                     if not mismatch:
                         raise  # Only raise if it's not a mismatch
+                    return
                 except Exception as e:
                     spider.log(f"Unexpected error: {e}")
             # No lxml_match_data
@@ -257,7 +253,7 @@ class XSSCharFinder(object):
         #    if e in body and e not in orig_body:
         #        return e
 
-    def unclaimedURL_check(self, body: bytes):
+    def unclaimed_url_check(self, body: bytes):
         """Check for unregistered domains in script tag URLs within the HTML body."""
         tree = html.fromstring(body)
         script_urls = tree.xpath('//script/@src')
@@ -282,7 +278,6 @@ class XSSCharFinder(object):
         # tag_index, tag, attr, attr_val, payload, unfiltered_chars, line = injection
         # get_unfiltered_chars() can only return a string 0+ characters, but never None
         unfiltered_chars = injection[5]
-        payload = injection[4]
         # injection[6] sometimes == '<p' maybe?
         # It happened POSTing chatRecord to http://service.taobao.com/support/minerva/robot_save_chat_record.htm
         # that page returned a Connection: Close header and no body
@@ -292,32 +287,28 @@ class XSSCharFinder(object):
 
         # get_reflected_chars() always returns a string
         if unfiltered_chars:
-            chars_payloads = self.get_breakout_chars(injection, resp_url)
+            chars_payloads: dict = self.get_breakout_chars(injection)
             # breakout_chars always returns a , never None
             if chars_payloads:
                 sugg_payloads = []
                 for chars, possible_payloads in chars_payloads.items():
                     if set(chars).issubset(set(unfiltered_chars)):
                         item_found = True
-                for chars in chars_payloads:
-                    if set(chars).issubset(set(unfiltered_chars)):
                         # Get rid of possible payloads with > in them if > not in unfiltered_chars
-                        item_found = True
                         for possible_payload in possible_payloads:
                             if '>' not in unfiltered_chars or '>' not in possible_payload:
-                                sugg_payloads.append(possible_payload)
                                 sugg_payloads.append(possible_payload)
 
                 if item_found:
                     return self.make_item(meta, resp_url, line, unfiltered_chars, sugg_payloads)
 
-    def get_breakout_chars(self, injection, resp_url):
+    def get_breakout_chars(self, injection: tuple):
         """
         Returns either None if no breakout chars were found
         or a list of sets of potential breakout characters
         """
 
-        tag_index, tag, attr, attr_val, payload, unfiltered_chars, line = injection
+        _, tag, attr, attr_val, payload, _, line = injection
         pl_delim = payload[:6]
         full_match = '%s.{0,85}?%s' % (pl_delim, pl_delim)
         line = re.sub(full_match, 'INJECTION', line)
@@ -329,20 +320,20 @@ class XSSCharFinder(object):
             chars = ('>')
             # Corrected the SVG tag spelling
             payload = '--><svg onLoad=prompt(9)>'
-            all_chars_payloads.setdefault(chars, []).append(payload)
+            all_chars_payloads.get(chars, []).append(payload)
 
         # Attribute injection
         elif attr:
             chars_payloads = self.attr_breakout(
                 tag, attr, attr_val, pl_delim, line)
             for k, payloads in chars_payloads.items():
-                all_chars_payloads.setdefault(k, []).extend(payloads)
+                all_chars_payloads.get(k, []).extend(payloads)
 
         # Between tag injection
         else:
             chars_payloads = self.tag_breakout(tag, line)
             for k, payloads in chars_payloads.items():
-                all_chars_payloads.setdefault(k, []).extend(payloads)
+                all_chars_payloads.get(k, []).extend(payloads)
 
         # Dedupe the list of potential payloads
         for chars in all_chars_payloads:
@@ -453,8 +444,6 @@ class XSSCharFinder(object):
         Generate potential payloads for breakout characters
         based on the provided attribute and line.
         """
-        breakout_chars = []
-        sugg_payload = []
         chars_payloads = {}
         dquote_open, squote_open = self.get_quote_context(line)
         attr_quote = self.get_attr_quote(attr, line)
@@ -667,7 +656,7 @@ class XSSCharFinder(object):
             # multiple html attributes with injections in them don't get caught
             # That being said, soupparser is crazy slow and introduces a ton of
             # new bugs so that is not an option at this point in time
-            doc = html.fromstring(bytes(body, 'utf-8'), base_url=resp_url)
+            doc: html.etree._Element = html.fromstring(bytes(body, 'utf-8'), base_url=resp_url)
         except html.etree.ParserError:
             self.log('ParserError from lxml on %s' % resp_url)
             return
@@ -860,23 +849,24 @@ class XSSCharFinder(object):
         """Create the vulnerability item."""
 
         item = vuln()
-        item['line'] = line if isinstance(line, str) else '\n'.join(line)
 
-        item.update({
-            'xss_payload': meta['payload'],
-            'unfiltered': unfiltered,
-            'xss_param': meta['xss_param'],
-            'xss_place': meta['xss_place'],
-            'orig_url': meta['orig_url'],
-            'resp_url': resp_url,
-            'sugg_payloads': ', '.join(sugg_payloads) if sugg_payloads else None,
-            'POST_to': meta.get('POST_to')
-        })
+        item['line'] = line if isinstance(line, str) else '\n'.join(line)
+        item['xss_payload'] = meta['payload']
+        item['unfiltered'] = unfiltered
+        item['xss_param'] = meta['xss_param']
+        item['xss_place'] = meta['xss_place']
+        item['orig_url'] = meta['orig_url']
+        item['resp_url'] = resp_url
+
+        if sugg_payloads:
+            item['sugg_payloads'] = ', '.join(sugg_payloads)
+        if 'POST_to' in meta:
+            item['POST_to'] = meta['POST_to']
 
         if item['unfiltered']:
             return item
 
-    def xpath_inj_points(self, search_el: str, doc: html.HtmlElement):
+    def xpath_inj_points(self, search_el: str, doc: html.etree._Element):
         """
         Searches the lxml document for any text, attributes, or comments
         that contain the specified search string.
@@ -948,22 +938,22 @@ class XSSCharFinder(object):
 
         return -1
 
-    def parse_attr_xpath(self, xpath: list[html.HtmlElement], search_str: str, doc: html.HtmlElement):
+    def parse_attr_xpath(self, xpath: list[html.etree._Element], search_str: str, doc: html.etree._Element):
         """Find all tags with attributes that contain the specified substring."""
 
         attr_inj = []
 
         for x in xpath:
             tag_index = self.get_elem_position(x, doc)
-            tag = x.tag
 
             for attr, attr_val in x.items():
-                if re.search(search_str, attr_val):
-                    attr_inj.append((tag_index, tag, attr, attr_val))
+                matches = re.findall(search_str, attr_val)
+                for _ in matches:
+                    attr_inj.append((tag_index, x.tag, attr, attr_val))
 
         return attr_inj
 
-    def parse_comm_xpath(self, xpath: list[html.HtmlElement], search_str: str, doc: html.HtmlElement):
+    def parse_comm_xpath(self, xpath: list[html.etree._Element], search_str: str, doc: html.etree._Element):
         """Parse the xpath comment search findings."""
 
         comm_inj = []
@@ -980,22 +970,23 @@ class XSSCharFinder(object):
 
         return comm_inj
 
-    def parse_text_xpath(self, xpath: list[html.HtmlElement], search_str: str, doc: html.HtmlElement):
+    def parse_text_xpath(self, xpath: list[html.etree._Element], search_str: str, doc: html.etree._Element):
         """Creates injection points for the xpath that finds the payload in any HTML enclosed text."""
 
         text_inj = []
-        for x in xpath:
-            parent = x.getparent()
 
+        for x in xpath:
+            parent: html.etree._Element = x.getparent()
+
+            # In case parent is a Comment()
             while callable(parent.tag):
                 parent = parent.getparent()
 
-            tag = parent.tag
             tag_index = self.get_elem_position(parent, doc)
             found_texts = re.findall(search_str, x.strip())
 
             for _ in found_texts:
-                text_inj.append((tag_index, tag, None, None))
+                text_inj.append((tag_index, parent.tag, None, None))
 
         return text_inj
 
@@ -1005,7 +996,7 @@ class XSSCharFinder(object):
         if '%' in payload:
             payload = unquote_plus(payload)
 
-        payload = html.unescape(payload)
+        payload = unescape(payload)
 
         return payload
 
