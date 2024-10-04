@@ -13,13 +13,7 @@ from urllib.parse import (
 
 from scrapy.http.cookies import CookieJar
 
-from lxml.html import soupparser, fromstring, HtmlElement
-import lxml.etree
-import lxml.html
-import re
-import sys
-import cgi
-import requests
+from lxml import html, etree
 import string
 import random
 
@@ -100,9 +94,8 @@ class XSSspider(CrawlSpider):
         """Fill out the login form and return the request."""
         self.log('Logging in...')
         try:
-            body: str = response.body.decode('utf-8')
             args, url, method = fill_login_form(
-                response.url, body, self.login_user, self.login_pass
+                response.url, response.body, self.login_user, self.login_pass
             )
             return FormRequest(
                 url=url,
@@ -117,9 +110,8 @@ class XSSspider(CrawlSpider):
 
     def confirm_login(self, response: Response):
         """Check that the username is present on the post-login page."""
-        body_text: str = response.body.decode('utf-8').lower()
         username: str = self.login_user.lower()
-        if username in body_text:
+        if username in response.text.lower():
             self.log('Successfully logged in! Username found in the response HTML.')
         else:
             self.log(
@@ -129,8 +121,7 @@ class XSSspider(CrawlSpider):
     def robot_parser(self, response: Response):
         """Parse the robots.txt file and create Requests for the disallowed domains."""
         disallowed_urls = set([])
-        body = response.body.decode('utf-8')
-        for line in body.splitlines():
+        for line in response.text.splitlines():
             if 'disallow: ' in line.lower():
                 try:
                     address = line.split()[1]
@@ -151,13 +142,13 @@ class XSSspider(CrawlSpider):
         Checks for XSS in headers and url
         """
         orig_url: str = response.url
-        body: str = response.body.decode('utf-8')
+        body: bytes = response.body
         parsed_url: ParseResult = urlparse(orig_url)
         url_params = parse_qsl(parsed_url.query, keep_blank_values=True)
 
         try:
-            doc: HtmlElement = lxml.html.fromstring(body, base_url=orig_url)
-        except (lxml.etree.ParserError, lxml.etree.XMLSyntaxError) as e:
+            doc: html.HtmlElement = html.fromstring(body, base_url=orig_url)
+        except (etree.ParserError, etree.XMLSyntaxError) as e:
             self.log(f'{type(e).__name__} from lxml on {orig_url}')
             return []
 
@@ -168,9 +159,10 @@ class XSSspider(CrawlSpider):
 
         # Prepare header requests
         test_headers = ['Referer']
-        if 'UA' in response.meta and response.meta['UA'] in body:
+        if 'UA' in response.meta and response.meta['UA'] in response.text:
             test_headers.append('User-Agent')
-        reqs.extend(self.make_header_reqs(orig_url, self.test_str, test_headers))
+        reqs.extend(self.make_header_reqs(
+            orig_url, self.test_str, test_headers))
 
         # Prepare cookie requests
         reqs.extend(self.make_cookie_reqs(orig_url, self.test_str, 'cookie'))
@@ -185,31 +177,36 @@ class XSSspider(CrawlSpider):
 
         # Add the original untampered response to each request for use by sqli_check()
         for r in reqs:
-            r.meta['orig_body'] = body
+            r.meta['orig_body'] = response.text
 
         return reqs
 
-    def url_valid(self, url, orig_url):
-        # Make sure there's a form action url
-        if url == None:
-            self.log('No form action URL found')
+    def url_valid(self, url, orig_url: str):
+        """
+        Ensure the form URL is valid. If the form's action URL is missing or lacks a scheme,
+        we attempt to construct a valid URL using the original page's URL (orig_url).
+        """
+        if not url:
+            self.log(
+                "Form action URL is missing. Defaulting to the original page URL.")
             return
 
-        # Sometimes lxml doesn't read the form.action right
         if '://' not in url:
             self.log(
-                'Form URL contains no scheme, attempting to put together a working form submissions URL')
+                "Form URL contains no scheme, attempting to construct a valid form submission URL."
+            )
+            # Use the original URL's scheme and domain to construct a full URL
+            # Assuming this returns (domain, scheme)
             proc_url = self.url_processor(orig_url)
-            url = proc_url[1]+proc_url[0]+url
+            url = proc_url[1] + proc_url[0] + url
 
         return url
 
-    def make_iframe_reqs(self, doc: HtmlElement, orig_url: str):
+    def make_iframe_reqs(self, doc: html.HtmlElement, orig_url: str):
         """
         Grab the <iframe src=...> attribute and add those URLs to the
         queue should they be within the start_url domain
         """
-        parsed_url = urlparse(orig_url)
         iframe_reqs = []
         all_frames = doc.xpath('//iframe/@src') + doc.xpath('//frame/@src')
 
@@ -239,6 +236,9 @@ class XSSspider(CrawlSpider):
             method = form.method
             form_url = form.action or form.base_url
             url = self.url_valid(form_url, orig_url)
+
+            if not url:
+                continue
 
             if url in method:
                 reqs.extend(self.create_form_request(
@@ -509,7 +509,7 @@ class XSSspider(CrawlSpider):
         if len(allModdedParams) > 0:
             return allModdedParams
 
-    def url_processor(self, url):
+    def url_processor(self, url: str):
         """Get the url domain, protocol, and netloc using urlparse"""
         try:
             parsed_url: ParseResult = urlparse(url)
