@@ -14,7 +14,7 @@ from lxml.html import soupparser, fromstring
 import itertools
 # from IPython import embed
 from socket import gaierror, gethostbyname
-from urllib.parse import urlparse
+from urllib.parse import unquote_plus, urlparse
 from logging import CRITICAL, ERROR, WARNING, INFO, DEBUG
 
 
@@ -36,7 +36,7 @@ class XSSCharFinder(object):
         response: Response = item['resp']
         meta = response.meta
 
-        payload = meta['payload']
+        payload: str = meta['payload']
         delim = meta['delim']
         param = meta['xss_param']
         resp_url = response.url
