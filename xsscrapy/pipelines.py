@@ -2,7 +2,9 @@
 #
 # Don't forget to add your pipeline to the ITEM_PIPELINES setting
 # See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
-from scrapy.exceptions import DropItem
+from xsscrapy.spiders.xss_spider import XSSspider
+from scrapy.http import Response
+from scrapy.item import Item
 from html.parser import HTMLParser
 from xsscrapy.items import vuln  # , inj_resp
 import re
@@ -15,23 +17,23 @@ from socket import gaierror, gethostbyname
 from urllib.parse import urlparse
 from logging import CRITICAL, ERROR, WARNING, INFO, DEBUG
 
+
 class XSSCharFinder(object):
     def __init__(self):
         self.url_param_xss_items = []
 
-    def get_filename(self, url):
+    def get_filename(self, url: str):
         filename = 'xsscrapy-vulns.txt'
         up = urlparse(url).netloc.replace('www.', '').split(':')[0]
         if up:
             filename = up + '.txt'
-            
         return filename
 
-    def open_spider(self, spider):
+    def open_spider(self, spider: XSSspider):
         self.filename = self.get_filename(spider.url)
 
-    def process_item(self, item, spider):
-        response = item['resp']
+    def process_item(self, item: Item, spider: XSSspider):
+        response: Response = item['resp']
         meta = response.meta
 
         payload = meta['payload']
@@ -41,7 +43,8 @@ class XSSCharFinder(object):
         body = response.body.decode('utf-8')
         mismatch = False
         error = None
-        fuzz_payload = payload.replace(delim, '').replace(';9', '') # xss char payload
+        fuzz_payload = payload.replace(delim, '').replace(
+            ';9', '')  # xss char payload
         # Regex: ( ) mean group 1 is within the parens, . means any char,
         # {1,80} means match any char 0 to 80 times, 80 chosen because double URL encoding
         # ? makes the search nongreedy so it stops after hitting its limits
@@ -52,7 +55,8 @@ class XSSCharFinder(object):
         # Quick sqli check based on DSSS
         dbms, regex = self.sqli_check(body, meta['orig_body'])
         if dbms:
-            msg = 'Possible SQL injection error! Suspected DBMS: %s, regex used: %s' % (dbms, regex)
+            msg = 'Possible SQL injection error! Suspected DBMS: %s, regex used: %s' % (
+                dbms, regex)
             item = self.make_item(meta, resp_url, msg, 'N/A', None)
             self.write_to_file(item, spider)
             item = None
@@ -72,31 +76,37 @@ class XSSCharFinder(object):
         body = body.lower()
 
         # XSS detection starts here
-        re_matches = sorted([(m.start(), m.group(), m.end()) for m in re.finditer(full_match, body)])
+        re_matches = sorted([(m.start(), m.group(), m.end())
+                            for m in re.finditer(full_match, body)])
 
         if len(re_matches) > 0:
-            #scolon_matches = sorted([(m.start(), m.group()) for m in re.finditer(sc_full_match, body)])
+            # scolon_matches = sorted([(m.start(), m.group()) for m in re.finditer(sc_full_match, body)])
             # If regex finds anything, get lxml matches
-            lxml_injs = self.get_lxml_matches(full_match, body, resp_url, delim)
+            lxml_injs = self.get_lxml_matches(
+                full_match, body, resp_url, delim)
             if lxml_injs:
                 err = None
                 if len(re_matches) != len(lxml_injs):
-                    spider.log('Error: mismatch in injections found by lxml and regex; higher chance of false positive for %s' % resp_url)
+                    spider.log(
+                        'Error: mismatch in injections found by lxml and regex; higher chance of false positive for %s' % resp_url)
                     error = 'Error: mismatch in injections found by lxml and regex; higher chance of false positive'
                     mismatch = True
 
-                inj_data = self.combine_regex_lxml(lxml_injs, re_matches, body, mismatch, payload, delim)
+                inj_data = self.combine_regex_lxml(
+                    lxml_injs, re_matches, body, mismatch, payload, delim)
                 # If mismatch is True, then "for offset in sorted(inj_data)" will fail with TypeError
                 try:
                     for offset in sorted(inj_data):
 
                         ########## XSS LOGIC #############
 
-                        item = self.xss_logic(inj_data[offset], meta, resp_url, error)
+                        item = self.xss_logic(
+                            inj_data[offset], meta, resp_url, error)
                         if item:
                             item = self.url_item_filtering(item, spider)
                             if mismatch:
-                                item['error'] = 'Mismatch: html parsed vs regex parsed injections, %d vs %d. Higher chance of false positive' % (len(injections), len(full_matches))
+                                item['error'] = 'Mismatch: html parsed vs regex parsed injections, %d vs %d. Higher chance of false positive' % (
+                                    len(injections), len(full_matches))
                             self.write_to_file(item, spider)
                             return item
                 except TypeError:
@@ -113,14 +123,16 @@ class XSSCharFinder(object):
         # Catches DB errors
         pl_lines_found = self.payloaded_lines(body, fuzz_payload)
         if pl_lines_found:
-            item = self.make_item(meta, resp_url, pl_lines_found, fuzz_payload, None)
+            item = self.make_item(
+                meta, resp_url, pl_lines_found, fuzz_payload, None)
             if item:
                 item = self.url_item_filtering(item, spider)
                 item['error'] = 'Payload delims do not surround this injection point. Found via search for entire payload.'
                 self.write_to_file(item, spider)
                 return item
 
-        raise DropItem('No XSS vulns in %s. type = %s, %s' % (resp_url, meta['xss_place'], meta['xss_param']))
+        raise DropItem('No XSS vulns in %s. type = %s, %s' %
+                       (resp_url, meta['xss_place'], meta['xss_param']))
 
     def sqli_check(self, body, orig_body):
         ''' Do a quick lookup in the response body for SQL errors. Both w3af's and DSSS.py's methods are in here
@@ -139,7 +151,7 @@ class XSSCharFinder(object):
         return None, None
 
         # Taken from w3af
-        #SQL_errors = ("System.Data.OleDb.OleDbException",
+        # SQL_errors = ("System.Data.OleDb.OleDbException",
         #              "[SQL Server]",
         #              "[Microsoft][ODBC SQL Server Driver]",
         #              "[SQLServer JDBC Driver]",
@@ -210,7 +222,7 @@ class XSSCharFinder(object):
         #              "where clause",
         #              "SqlServer",
         #              "syntax error")
-        #for e in SQL_errors:
+        # for e in SQL_errors:
         #    if e in body and e not in orig_body:
         #        return e
 
@@ -234,17 +246,17 @@ class XSSCharFinder(object):
         test for breakout given OR statements, like " or ; to breakout'''
         # Gets rid of some false positives
         # ex: https://www.facebook.com/directory/pages/9zqjxpo'%22()%7B%7D%3Cx%3E:9zqjxpo;9
-        #if len(unfiltered) > len(self.test_str):
+        # if len(unfiltered) > len(self.test_str):
         #    return
         # Unpack the injection
-        #tag_index, tag, attr, attr_val, payload, unfiltered_chars, line = injection
+        # tag_index, tag, attr, attr_val, payload, unfiltered_chars, line = injection
         # get_unfiltered_chars() can only return a string 0+ characters, but never None
         unfiltered_chars = injection[5]
         payload = injection[4]
         # injection[6] sometimes == '<p' maybe?
         # It happened POSTing chatRecord to http://service.taobao.com/support/minerva/robot_save_chat_record.htm
         # that page returned a Connection: Close header and no body
-        ############### THIS NEEDS TO BE THE REFLECTED PAYLOAD
+        # THIS NEEDS TO BE THE REFLECTED PAYLOAD
         line = injection[6]
         item_found = None
 
@@ -289,7 +301,8 @@ class XSSCharFinder(object):
 
         # Attribute injection
         elif attr:
-            chars_payloads = self.attr_breakout(tag, attr, attr_val, pl_delim, line)
+            chars_payloads = self.attr_breakout(
+                tag, attr, attr_val, pl_delim, line)
             for k in chars_payloads:
                 try:
                     all_chars_payloads[k] += chars_payloads[k]
@@ -314,7 +327,8 @@ class XSSCharFinder(object):
     def decomment_js(self, line):
         ''' Remove commented JS lines which screw with quote detection '''
         lines = line.splitlines()
-        decommented_lines = [l for l in lines if not l.strip().startswith('//')]
+        decommented_lines = [
+            l for l in lines if not l.strip().startswith('//')]
         line = '\n'.join(decommented_lines)
         return line
 
@@ -386,7 +400,7 @@ class XSSCharFinder(object):
         attr_quote = None
         # Split the line at the attribute once so target string is everything after the attr
         split_line = line.split(attr, 1)
-        attr_split_lines = line.split(attr, 1) #[0] is ''
+        attr_split_lines = line.split(attr, 1)  # [0] is ''
         if len(attr_split_lines) > 1:
             attr_split_line = attr + attr_split_lines[1]
             # match starts with =, then find any amount of space (nongreedy with ?) until either ' or "
@@ -410,7 +424,7 @@ class XSSCharFinder(object):
         # although it's unnecessary for the payload
 
         # CHECK HERE, PASS DOWN THE ORIG ATTR VAL
-        #if delim+'subbed' in attr_val:
+        # if delim+'subbed' in attr_val:
         if attr_val[:len(delim+'subbed')] == delim+'subbed':
             if tag == 'a' and attr == 'href':
                 # Only need : ( and ) to use javascript:prompt(4) redir payload
@@ -489,7 +503,7 @@ class XSSCharFinder(object):
                 except KeyError:
                     chars_payloads[chars] = [payload]
 
-            #elif squote_open and not dquote_open:
+            # elif squote_open and not dquote_open:
             else:
                 chars = (";")
                 payload = ";prompt(9);"
@@ -497,7 +511,6 @@ class XSSCharFinder(object):
                     chars_payloads[chars].append(payload)
                 except KeyError:
                     chars_payloads[chars] = [payload]
-
 
         # Check if quotes even exist in the line
         if '"' in line or "'" in line:
@@ -611,12 +624,12 @@ class XSSCharFinder(object):
             self.log('XMLSyntaxError from lxml on %s' % resp_url)
             return
         return doc
-        #try:
+        # try:
         #    # You must use soupparser or else candyass webdevs who use identical
         #    # multiple html attributes with injections in them don't get caught
         #    # EXCEPT I found out that soupparser is a CPU MONSTER and intros more bugs
         #    doc = lxml.html.soupparser.fromstring(subbed_body)
-        #except ValueError:
+        # except ValueError:
         #    try:
         #        doc = lxml.html.fromstring(subbed_body)
         #    except lxml.etree.ParserError:
@@ -625,10 +638,10 @@ class XSSCharFinder(object):
         #    except lxml.etree.XMLSyntaxError:
         #        self.log('XMLSyntaxError from lxml on %s' % resp_url)
         #        return
-        #except lxml.etree.ParserError:
+        # except lxml.etree.ParserError:
         #    self.log('ParserError from lxml on %s' % resp_url)
         #    return
-        #except lxml.etree.XMLSyntaxError:
+        # except lxml.etree.XMLSyntaxError:
         #    self.log('XMLSyntaxError from lxml on %s' % resp_url)
         #    return
 
@@ -655,7 +668,8 @@ class XSSCharFinder(object):
                     attr_val = attrs_attrvals[a]
             # I don't think this is necessary now that we use lxml.html.soupparse.fromstring rather than lxml.html.fromstring
             else:
-                spider.log("Error: Possible broken HTML. Lxml failed to find the attribute. twitter.com/?q=[payload] is an example.")
+                spider.log(
+                    "Error: Possible broken HTML. Lxml failed to find the attribute. twitter.com/?q=[payload] is an example.")
                 continue
             # If it's an attribute inj then the tag will always be "<tag "
             # If it's an injection in a comment or between tags
@@ -671,8 +685,10 @@ class XSSCharFinder(object):
             sub = delim+'subbed'
 
             start_of_match = body[match_start_offset:]
-            ref_payload_plus_2 = start_of_match[:(match_end_offset - match_start_offset)+2]
-            ref_payload = start_of_match[:(match_end_offset - match_start_offset)]
+            ref_payload_plus_2 = start_of_match[:(
+                match_end_offset - match_start_offset)+2]
+            ref_payload = start_of_match[:(
+                match_end_offset - match_start_offset)]
             # ref_payload would only equal ref_payload_plus_2 if ;9 doesn't exist
             if ref_payload != ref_payload_plus_2:
                 if ref_payload_plus_2[-2:] == ';9':
@@ -681,7 +697,8 @@ class XSSCharFinder(object):
             # split the body at the tag, then take the last fragment
             # which is closest to the injection point as regexed
             split_body = body[:match_start_offset]
-            line_no_tag = split_body.split(tag_delim)[-1]#.replace('\\"', '').replace("\\'", "")
+            # .replace('\\"', '').replace("\\'", "")
+            line_no_tag = split_body.split(tag_delim)[-1]
             line = tag_delim + line_no_tag + ref_payload
             # Sometimes it may split wrong, in which case we drop that lxml match
             if line_no_tag.startswith('<doctype') or line_no_tag.startswith('<html'):
@@ -690,17 +707,20 @@ class XSSCharFinder(object):
             # Get the accurate attr, as the original attr and attr_val in this function
             # would just be the first one found even if there were >1 attributes in lxml_injs
             if attr:
-                attr_dict = self.accurate_attr(tag, attrs_attrvals, match, line)
+                attr_dict = self.accurate_attr(
+                    tag, attrs_attrvals, match, line)
                 for a in attr_dict:
                     attr = a
                     attr_val = attr_dict[a]
                     break
 
-            unfiltered_chars = self.get_unfiltered_chars(payload, ref_payload, delim, tag, attr)
+            unfiltered_chars = self.get_unfiltered_chars(
+                payload, ref_payload, delim, tag, attr)
             # Common false+ shows only "> as unfiltered if script parses the chars between 2 unrelated delim strs
-            #if unfiltered_chars == '">':
+            # if unfiltered_chars == '">':
             #    unfiltered_chars = ''
-            all_inj_data[match_start_offset] = [tag_index, tag, attr, attr_val, payload, unfiltered_chars, line]
+            all_inj_data[match_start_offset] = [tag_index, tag,
+                                                attr, attr_val, payload, unfiltered_chars, line]
 
         return all_inj_data
 
@@ -721,9 +741,10 @@ class XSSCharFinder(object):
             if entity in ref_chars:
                 ref_chars.replace(entity, '')
 
-        #If injection is inside script tag, remove the escaped chars
+        # If injection is inside script tag, remove the escaped chars
         if tag == 'script' or attr in self.event_attributes():
-           ref_chars = ref_chars.replace("\\'", "").replace('\\"', '').replace('\;', '').replace('\\>', '').replace('\\<', '').replace('\\/', '')
+            ref_chars = ref_chars.replace("\\'", "").replace('\\"', '').replace(
+                '\;', '').replace('\\>', '').replace('\\<', '').replace('\\/', '')
 
         for c in fuzz_chars:
             if c in ref_chars:
@@ -760,14 +781,14 @@ class XSSCharFinder(object):
                 attr_places[max(attrs_found)] = attr
              # Get the attribute from the higher numbered key within attr_places
             closest_attr = attr_places[max(attr_places)]
-            return {closest_attr:copy_attrs_attrvals[closest_attr]}
+            return {closest_attr: copy_attrs_attrvals[closest_attr]}
 
         # Found the accurate attr
         else:
             for attr in copy_attrs_attrvals:
-                return {attr:copy_attrs_attrvals[attr]}
+                return {attr: copy_attrs_attrvals[attr]}
 
-        return {None:None}
+        return {None: None}
 
     def payloaded_lines(self, body, payload):
         pl_lines_found = sorted([])
@@ -805,11 +826,11 @@ class XSSCharFinder(object):
         injections = []
         same_tag_attrs = {}
 
-        # Why this xpath is wrong: perm.ly/dom4j-xpath-contains 
-        #text_xss = doc.xpath("//*[contains(text(), '%s')]" % search_str)
+        # Why this xpath is wrong: perm.ly/dom4j-xpath-contains
+        # text_xss = doc.xpath("//*[contains(text(), '%s')]" % search_str)
 
         # Will this find DB error message stuff without a tag? No. It will not.
-        #text_xss = doc.xpath("//*[text()]")#[contains(.,'%s')]]" % search_str)
+        # text_xss = doc.xpath("//*[text()]")#[contains(.,'%s')]]" % search_str)
 
         # Return all text nodes that contain the search_str
         text_xss = doc.xpath("//text()[contains(., '%s')]" % search_str)
@@ -839,11 +860,12 @@ class XSSCharFinder(object):
                 # Just make them useless by entering empty tag and putting them at the end of the lxml matches
                 # so a split at tag won't find anything
                 if not tag_index:
-                    print (' '*36+'ERROR: Error: could not find tag index location. Element does not exist in root doc.')
+                    print(
+                        ' '*36+'ERROR: Error: could not find tag index location. Element does not exist in root doc.')
                     tag_index = 999999999
                     tag = ''
                 loc_tag = (tag_index, tag)
-                attr_attrval = {attr:attr_val}
+                attr_attrval = {attr: attr_val}
 
                 # combine the multi attr injections into a dict otherwise
                 # just add the {attr, attr_val} injection as the second item
@@ -887,7 +909,7 @@ class XSSCharFinder(object):
             tag = x.tag
             items = x.items()
             for i in items:
-                #i = (attr, attr_val)
+                # i = (attr, attr_val)
                 attr = i[0]
                 attr_val = i[1]
                 found = re.findall(search_str, attr_val)
@@ -930,7 +952,7 @@ class XSSCharFinder(object):
         ''' Unescape the various payload encodings (html and url encodings)'''
         if '%' in payload:
             payload = unquote_plus(payload)
-            #if '%' in payload: # in case we ever add double url encoding like %2522 for dub quote
+            # if '%' in payload: # in case we ever add double url encoding like %2522 for dub quote
             #    payload = urllib.unquote_plus(payload)
         # only html-encoded payloads will have & in them
         payload = HTMLParser.HTMLParser().unescape(payload)
@@ -941,7 +963,7 @@ class XSSCharFinder(object):
         ''' Check for the special chars and append them to a master list of tuples, one tuple per injection point
         Always returns a string '''
 
-        returned_chars = ref_payload.replace(delim, '').replace('9','')
+        returned_chars = ref_payload.replace(delim, '').replace('9', '')
 
         return returned_chars
 
@@ -968,7 +990,8 @@ class XSSCharFinder(object):
                                 # Match the unfiltered characters
                                 if item['unfiltered'] == i['unfiltered']:
 
-                                    raise DropItem('Duplicate item found: %s' % item['orig_url'])
+                                    raise DropItem(
+                                        'Duplicate item found: %s' % item['orig_url'])
 
             self.url_param_xss_items.append(item)
 
@@ -1023,14 +1046,14 @@ class XSSCharFinder(object):
 
             if 'sugg_payloads' in item:
                 f.write('Possible payloads: '+item['sugg_payloads']+'\n')
-                spider.log('    Possible payloads: '+item['sugg_payloads'], level=INFO)
+                spider.log('    Possible payloads: ' +
+                           item['sugg_payloads'], level=INFO)
 
             # Cut off the line at 500
-            #f.write('Line: '+item['line'][-500:]+'\n')
+            # f.write('Line: '+item['line'][-500:]+'\n')
             f.write('Line: '+item['line']+'\n')
             spider.log('    Line: '+item['line'], level=INFO)
 
             if 'error' in item:
                 f.write('Error: '+item['error']+'\n')
                 spider.log('    Error: '+item['error'], level=INFO)
-
