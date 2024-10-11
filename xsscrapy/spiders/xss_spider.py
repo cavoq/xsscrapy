@@ -1,6 +1,5 @@
 # -- coding: utf-8 --
 
-import locale
 import random
 import string
 
@@ -166,7 +165,8 @@ class XSSspider(CrawlSpider):
             reqs.extend(self.make_form_reqs(orig_url, forms, self.test_str))
 
         payloaded_urls = self.make_urls(orig_url, parsed_url, url_params)
-        reqs.extend(self.make_url_reqs(orig_url, payloaded_urls))
+        if payloaded_urls:
+            reqs.extend(self.make_url_reqs(orig_url, payloaded_urls))
 
         # Add the original untampered response to each request for use by sqli_check()
         for r in reqs:
@@ -231,10 +231,7 @@ class XSSspider(CrawlSpider):
             form_url = form.action or form.base_url
             url = self.url_valid(form_url, orig_url)
 
-            if not url or not method:
-                continue
-
-            if url in method:
+            if url and method:
                 reqs.extend(self.create_form_request(
                     form, url, orig_url, payload))
 
@@ -371,7 +368,7 @@ class XSSspider(CrawlSpider):
         changed_params = []
         modified = False
         # Create a list of lists where num of lists = len(params)
-        for x in range(0, len(url_params)):
+        for _ in range(0, len(url_params)):
             single_url_params = []
 
             # Make the payload
