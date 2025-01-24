@@ -5,3 +5,4 @@ xsscrapy-vulns*
 *.swo
 *.png
 venv/
+env/
